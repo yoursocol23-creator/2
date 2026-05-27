@@ -60,6 +60,10 @@ local AccentThemes = {
         accent = Color3.fromRGB(18, 18, 18),
         accentSoft = Color3.fromRGB(48, 48, 48),
     },
+    ["Cute Girl"] = {
+        accent = Color3.fromRGB(72, 255, 104),
+        accentSoft = Color3.fromRGB(46, 196, 82),
+    },
     ["Rainbow"] = {
         accent = Color3.fromRGB(54, 248, 87),
         accentSoft = Color3.fromRGB(40, 180, 70),
@@ -160,6 +164,10 @@ local UI = {
     logoImageData = nil,
     logoImageFailed = false,
     logoImageUnsupported = false,
+    cuteGirlImageUrl = "https://media.discordapp.net/attachments/1505588811948626110/1505588813022363868/r8bhhw1z67zb.jpg?ex=6a185b59&is=6a1709d9&hm=5918dc3b40205ccf77dfd453ed617d506aa39ce9852904542e248dc3bef2a79c&=&format=webp&width=540&height=960",
+    cuteGirlImageData = nil,
+    cuteGirlImageFailed = false,
+    cuteGirlOverlayUntil = 0,
     animationState = {
         tabHover = {},
         tabActive = {},
@@ -188,6 +196,7 @@ local UI = {
 
     shellBucket = NewBucket(),
     loadingBucket = NewBucket(),
+    overlayBucket = NewBucket(),
     espObjects = {},
     activeEspKeys = {
         debug = {},
@@ -232,7 +241,7 @@ local UI = {
             {id = "ui_scale", type = "slider", label = "UI Width", description = "", min = 540, max = 760, step = 10, value = 620},
             {id = "ui_height", type = "slider", label = "UI Height", description = "", min = 300, max = 520, step = 8, value = 352},
             {id = "tween_speed", type = "slider", label = "Tween Speed", description = "", min = 5, max = 40, step = 1, value = 20},
-            {id = "accent_theme", type = "dropdown_single", label = "UI Color", description = "", value = "Green", options = {"Green", "Blue", "Red", "Orange", "Pink", "White", "Black", "Rainbow"}},
+            {id = "accent_theme", type = "dropdown_single", label = "UI Color", description = "", value = "Green", options = {"Green", "Blue", "Red", "Orange", "Pink", "White", "Black", "Cute Girl", "Rainbow"}},
             {id = "ui_animations", type = "checkbox", label = "Animations", description = "", value = true},
             {id = "auto_save_config", type = "toggle", label = "Auto Save Config", description = "", value = true},
             {id = "discord_button", type = "button", label = "Discord", description = "", accent = "accent"},
@@ -241,6 +250,7 @@ local UI = {
             {id = "pizza_bike_esp", type = "toggle", label = "Pizza Bike Esp", description = "", value = false},
             {id = "path_esp", type = "toggle", label = "Path ESP", description = "", value = false},
             {id = "node_esp", type = "toggle", label = "Node ESP", description = "", value = false},
+            {id = "cute_girl_button", type = "button", label = "cute girl", description = "", accent = "accent"},
         },
         {
             {id = "car_fly_toggle", type = "toggle", label = "Car Fly", description = "", value = false},
@@ -286,6 +296,17 @@ end
 
 local function TaxiDebug(message)
     print("[Bloxburg] " .. tostring(message))
+end
+
+local TaxiDebugState = {}
+
+local function TaxiDebugThrottled(key, interval, message)
+    local now = tick()
+    local nextAllowed = TaxiDebugState[key] or 0
+    if now >= nextAllowed then
+        TaxiDebugState[key] = now + (interval or 1)
+        TaxiDebug(message)
+    end
 end
 
 local function JobDebug(message)
@@ -520,6 +541,28 @@ function UI:GetLogoImageData()
     end
 
     self.logoImageFailed = true
+    return nil
+end
+
+function UI:GetCuteGirlImageData()
+    if self.logoImageUnsupported then
+        return nil
+    end
+
+    if self.cuteGirlImageData or self.cuteGirlImageFailed then
+        return self.cuteGirlImageData
+    end
+
+    local ok, data = pcall(function()
+        return game:HttpGet(self.cuteGirlImageUrl)
+    end)
+
+    if ok and type(data) == "string" and data ~= "" then
+        self.cuteGirlImageData = data
+        return self.cuteGirlImageData
+    end
+
+    self.cuteGirlImageFailed = true
     return nil
 end
 
@@ -2784,6 +2827,11 @@ function UI:AreAnimationsEnabled()
     return not control or control.value == true
 end
 
+function UI:IsCuteGirlThemeActive()
+    local control = self:GetControl(4, "accent_theme")
+    return control and control.value == "Cute Girl"
+end
+
 function UI:BuildConfigData()
     local data = {
         version = 1,
@@ -2983,12 +3031,16 @@ function UI:GetTaxiStandPart()
     local environment = workspace and workspace:FindFirstChild("Environment")
     local taxiStands = environment and environment:FindFirstChild("TaxiStands")
     local taxiFolder = taxiStands and taxiStands:FindFirstChild("Taxi")
-    local taxiModel = taxiFolder and taxiFolder:FindFirstChild("TruFleet City Taxi")
-    local vehicle = taxiModel and taxiModel:FindFirstChild("Vehicle")
-    local chassi = vehicle and vehicle:FindFirstChild("Chassi")
-    if chassi and chassi:IsA("BasePart") then
-        return chassi
+    if not taxiFolder then
+        return nil
     end
+
+    for _, descendant in ipairs(taxiFolder:GetDescendants()) do
+        if descendant:IsA("BasePart") and descendant.Name == "TaxiJobCar" then
+            return descendant
+        end
+    end
+
     return nil
 end
 
@@ -3000,21 +3052,42 @@ function UI:GetNearestTaxiStandPart()
         return nil
     end
 
+    local rootPart = self:GetLocalRootPart()
+    local referencePosition = rootPart and rootPart.Position or TAXI_JOB_POSITION
     local bestPart = nil
     local bestDistance = math.huge
 
-    for _, descendant in ipairs(taxiFolder:GetDescendants()) do
-        if descendant:IsA("BasePart") and descendant.Name == "Chassi" then
-            local model = descendant.Parent and descendant.Parent.Parent
-            local isTaxi = model and model.Name == "TruFleet City Taxi"
-            if isTaxi then
-                local distance = (descendant.Position - TAXI_JOB_POSITION).Magnitude
-                if distance < bestDistance then
-                    bestDistance = distance
-                    bestPart = descendant
-                end
+    for _, candidatePart in ipairs(taxiFolder:GetDescendants()) do
+        if candidatePart:IsA("BasePart") and candidatePart.Name == "TaxiJobCar" then
+            local jobDistance = (candidatePart.Position - TAXI_JOB_POSITION).Magnitude
+            local distance = (candidatePart.Position - referencePosition).Magnitude
+            TaxiDebugThrottled("taxi_stand_candidate_" .. candidatePart:GetFullName(), 1.5, string.format(
+                "Taxi stand candidate: part=%s pos=(%.2f, %.2f, %.2f) jobDistance=%.2f distance=%.2f",
+                candidatePart:GetFullName(),
+                candidatePart.Position.X,
+                candidatePart.Position.Y,
+                candidatePart.Position.Z,
+                jobDistance,
+                distance
+            ))
+            if distance < bestDistance then
+                bestDistance = distance
+                bestPart = candidatePart
             end
         end
+    end
+
+    if bestPart then
+        TaxiDebugThrottled("taxi_stand_selected", 1, string.format(
+            "Taxi stand selected: part=%s pos=(%.2f, %.2f, %.2f) distance=%.2f",
+            bestPart:GetFullName(),
+            bestPart.Position.X,
+            bestPart.Position.Y,
+            bestPart.Position.Z,
+            bestDistance
+        ))
+    else
+        TaxiDebugThrottled("taxi_stand_selected_none", 1, "Taxi stand selected: none")
     end
 
     return bestPart
@@ -3075,6 +3148,33 @@ end
 function UI:GetTaxiCustomerPosition()
     local mouseIgnore = workspace:FindFirstChild("MouseIgnore")
     local guidingArrow = nil
+    local ownedCustomerModel = self:GetOwnedTaxiCustomerModel()
+    local ownedCustomerName = ownedCustomerModel and tostring(ownedCustomerModel.Name) or "unknown"
+    local ownedCustomerExactPosition = nil
+    local ownedCustomerExactDistance = math.huge
+
+    if ownedCustomerModel and ownedCustomerModel:IsA("Model") then
+        local ownedCandidatePart = ownedCustomerModel:FindFirstChild("HumanoidRootPart")
+        if not (ownedCandidatePart and ownedCandidatePart:IsA("BasePart")) then
+            ownedCandidatePart = ownedCustomerModel:FindFirstChild("Head")
+        end
+        if not (ownedCandidatePart and ownedCandidatePart:IsA("BasePart")) then
+            ownedCandidatePart = ownedCustomerModel.PrimaryPart
+        end
+        if not (ownedCandidatePart and ownedCandidatePart:IsA("BasePart")) then
+            for _, descendant in ipairs(ownedCustomerModel:GetDescendants()) do
+                if descendant:IsA("BasePart") then
+                    ownedCandidatePart = descendant
+                    break
+                end
+            end
+        end
+
+        if ownedCandidatePart and ownedCandidatePart:IsA("BasePart") then
+            ownedCustomerExactPosition = ownedCandidatePart.Position
+        end
+    end
+
     if mouseIgnore then
         guidingArrow = mouseIgnore:FindFirstChild("GuidingArrow_Taxi_Customer")
         if not (guidingArrow and guidingArrow:IsA("BasePart")) then
@@ -3100,6 +3200,23 @@ function UI:GetTaxiCustomerPosition()
 
     if not guidingArrow or not guidingArrow:IsA("BasePart") then
         TaxiDebug("Taxi customer lookup: guiding arrow missing")
+        if ownedCustomerExactPosition then
+            if rootPart then
+                ownedCustomerExactDistance = (rootPart.Position - ownedCustomerExactPosition).Magnitude
+            end
+            self.farmState.lastTaxiCustomerPosition = ownedCustomerExactPosition
+            self.farmState.lastTaxiCustomerName = ownedCustomerName
+            self.farmState.lastTaxiCustomerDot = nil
+            TaxiDebug(string.format(
+                "Taxi customer fallback: using exact owned customer name=%s distance=%.2f target=(%.2f, %.2f, %.2f)",
+                ownedCustomerName,
+                ownedCustomerExactDistance < math.huge and ownedCustomerExactDistance or 0,
+                ownedCustomerExactPosition.X,
+                ownedCustomerExactPosition.Y,
+                ownedCustomerExactPosition.Z
+            ))
+            return ownedCustomerExactPosition
+        end
         if rootPart and typeof(cachedPosition) == "Vector3" and (rootPart.Position - cachedPosition).Magnitude <= 20 then
             TaxiDebug(string.format(
                 "Taxi customer fallback: using cached target name=%s dot=%s distance=%.2f target=(%.2f, %.2f, %.2f)",
@@ -3229,6 +3346,25 @@ function UI:GetTaxiCustomerPosition()
             bestPosition.Z
         ))
         return bestPosition
+    end
+
+    if ownedCustomerExactPosition then
+        if rootPart then
+            ownedCustomerExactDistance = (rootPart.Position - ownedCustomerExactPosition).Magnitude
+        end
+        self.farmState.lastTaxiCustomerPosition = ownedCustomerExactPosition
+        self.farmState.lastTaxiCustomerName = ownedCustomerName
+        self.farmState.lastTaxiCustomerDot = bestDot > -1 and bestDot or nil
+        TaxiDebug(string.format(
+            "Taxi customer fallback: using exact owned customer name=%s dot=%s distance=%.2f target=(%.2f, %.2f, %.2f)",
+            ownedCustomerName,
+            bestDot > -1 and string.format("%.4f", bestDot) or "nil",
+            ownedCustomerExactDistance < math.huge and ownedCustomerExactDistance or 0,
+            ownedCustomerExactPosition.X,
+            ownedCustomerExactPosition.Y,
+            ownedCustomerExactPosition.Z
+        ))
+        return ownedCustomerExactPosition
     end
 
     if rootPart and typeof(cachedPosition) == "Vector3" and (rootPart.Position - cachedPosition).Magnitude <= 20 then
@@ -3427,16 +3563,11 @@ function UI:TryMountTaxi()
         return false
     end
 
-    if not standPart then
-        TaxiDebug("Taxi mount: nearest taxi stand part missing")
-        return false
-    end
-
     local jobDistance = (rootPart.Position - TAXI_JOB_POSITION).Magnitude
-    local standDistance = (rootPart.Position - standPart.Position).Magnitude
+    local standDistance = standPart and (rootPart.Position - standPart.Position).Magnitude or math.huge
     local mountStage = self.farmState.taxiMountStage or "job"
 
-    TaxiDebug(string.format(
+    TaxiDebugThrottled("taxi_mount_state", 0.75, string.format(
         "Taxi mount: stage=%s jobDistance=%.2f standDistance=%.2f tweenActive=%s",
         tostring(mountStage),
         jobDistance,
@@ -3454,7 +3585,7 @@ function UI:TryMountTaxi()
     end
 
     if self.tweenState.active then
-        TaxiDebug("Taxi mount: tween active, waiting")
+        TaxiDebugThrottled("taxi_mount_tween_wait", 1, "Taxi mount: tween active, waiting")
         return false
     end
 
@@ -3471,28 +3602,26 @@ function UI:TryMountTaxi()
             self:TweenWithVehicleTo(TAXI_JOB_POSITION)
             return false
         end
-        self.farmState.taxiMountStage = "stand"
-        TaxiDebug("Taxi mount: reached job point, advancing to stand")
-        return false
-    end
-
-    if mountStage == "stand" then
-        if standDistance > 8 then
-            TaxiDebug(string.format(
-                "Taxi mount: tweening to nearest stand target=(%.2f, %.2f, %.2f)",
-                standPart.Position.X,
-                standPart.Position.Y,
-                standPart.Position.Z
-            ))
-            self:TweenWithVehicleTo(standPart.Position)
-            return false
-        end
         self.farmState.taxiMountStage = "mount"
-        TaxiDebug("Taxi mount: reached stand, advancing to mount")
+        TaxiDebug("Taxi mount: reached job point, advancing to mount")
         return false
     end
 
     if mountStage == "mount" then
+        if standPart and standDistance > 8 then
+            TaxiDebug(string.format(
+                "Taxi mount: tweening to nearby taxi target=(%.2f, %.2f, %.2f) distance=%.2f",
+                standPart.Position.X,
+                standPart.Position.Y,
+                standPart.Position.Z,
+                standDistance
+            ))
+            self:TweenWithVehicleTo(standPart.Position)
+            return false
+        elseif not standPart then
+            TaxiDebug("Taxi mount: no nearby taxi target found, pressing E from job point")
+        end
+
         if (tick() - (self.farmState.lastTaxiInteractAt or 0)) >= 0.35 then
             self.farmState.lastTaxiInteractAt = tick()
             TaxiDebug("Taxi mount: pressing E to enter taxi")
@@ -3632,7 +3761,7 @@ end
 function UI:HandleTaxiFarm()
     self:ClearPathNodes()
     if not self:IsLocalPlayerOnCar() then
-        TaxiDebug("Taxi farm: not on car, trying to mount taxi")
+        TaxiDebugThrottled("taxi_farm_mounting", 1, "Taxi farm: not on car, trying to mount taxi")
         self:TryMountTaxi()
         return
     end
@@ -3646,7 +3775,7 @@ function UI:HandleTaxiFarm()
     end
 
     if self.tweenState.active then
-        TaxiDebug("Taxi farm: tween active, waiting")
+        TaxiDebugThrottled("taxi_farm_tween_wait", 1, "Taxi farm: tween active, waiting")
         return
     end
 
@@ -3735,7 +3864,7 @@ function UI:HandleTaxiFarm()
         local box = taxiZone and taxiZone:FindFirstChild("Box")
         if box and box:IsA("BasePart") then
             local zoneDistance = (rootPart.Position - box.Position).Magnitude
-            if zoneDistance > 15 then
+            if zoneDistance > 10 then
                 self:SetFarmStatus("Delivering")
                 self.farmState.lastTaxiZoneWaitStartedAt = 0
                 TaxiDebug(string.format(
@@ -3748,6 +3877,15 @@ function UI:HandleTaxiFarm()
                 self:TweenWithVehicleTo(box.Position)
                 return
             end
+
+            TaxiDebug(string.format(
+                "Taxi farm: holding taxi zone box target=(%.2f, %.2f, %.2f) distance=%.2f",
+                box.Position.X,
+                box.Position.Y,
+                box.Position.Z,
+                zoneDistance
+            ))
+            self:HoldInteractionTarget(box.Position)
 
             if (self.farmState.lastTaxiZoneWaitStartedAt or 0) == 0 then
                 self.farmState.lastTaxiZoneWaitStartedAt = tick()
@@ -4287,6 +4425,10 @@ function UI:HandleControlClick(control)
             self:PanicReset()
         elseif control.id == "goto_job_button" then
             self:GotoSelectedJob()
+        elseif control.id == "cute_girl_button" then
+            self.cuteGirlOverlayUntil = tick() + 4
+            self:GetCuteGirlImageData()
+            self:MarkShellDirty()
         end
     elseif control.type == "dropdown_single" or control.type == "dropdown_multi" then
         self:ToggleDropdown(control.id)
@@ -4355,6 +4497,11 @@ end
 function UI:HandleTransientEffects()
     local now = tick()
     local dirty = false
+
+    if (self.cuteGirlOverlayUntil or 0) > 0 and now >= (self.cuteGirlOverlayUntil or 0) then
+        self.cuteGirlOverlayUntil = 0
+        self:MarkShellDirty()
+    end
 
     for _, tabControls in ipairs(self.controls) do
         for _, control in ipairs(tabControls) do
@@ -4597,6 +4744,20 @@ function UI:BuildShell()
     self:CreateSquare(bucket, wx + 1, wy + 1, sidebarW - 1, wh - 2, Theme.sidebar, 1, true)
     self:CreateLine(bucket, wx + sidebarW, wy + 2, wx + sidebarW, wy + wh - 2, Theme.borderSoft, 1, 1)
 
+    if self:IsCuteGirlThemeActive() then
+        local cuteGirlImageData = self:GetCuteGirlImageData()
+        local contentX = wx + sidebarW + 10
+        local contentY = wy + 10
+        local contentW = ww - sidebarW - 22
+        local contentH = wh - 20
+        if cuteGirlImageData then
+            self:CreateImage(bucket, cuteGirlImageData, contentX, contentY, contentW, contentH, 0.22)
+            self:CreateSquare(bucket, contentX, contentY, contentW, contentH, Theme.accent, 0.16, true)
+        else
+            self:CreateSquare(bucket, contentX, contentY, contentW, contentH, Theme.accentSoft, 0.12, true)
+        end
+    end
+
     local iconX = wx + 16
     local iconY = wy + 16
     local logoImageData = self:GetLogoImageData()
@@ -4609,6 +4770,7 @@ function UI:BuildShell()
     if not drewLogoImage then
         self:CreateText(bucket, "W", iconX + 17, iconY + 8, Theme.success, 16, true)
     end
+
     self:CreateText(bucket, "Windy", iconX + 44, iconY + 6, Theme.text, 17, false)
     self:CreateText(bucket, "Bloxburg - " .. self:GetVersionStatusText(), iconX + 44, iconY + 22, Theme.textDim, 12, false)
     self:CreateText(bucket, "TABS", wx + 16, wy + 82, Theme.textDim, 12, false)
@@ -4899,12 +5061,49 @@ function UI:BuildActiveTab()
     self.renderAlpha = 1
 end
 
+function UI:BuildOverlay()
+    local bucket = self.overlayBucket
+    self:ClearBucket(bucket)
+    bucket.deferVisible = true
+    self.renderAlpha = 1
+
+    if (self.cuteGirlOverlayUntil or 0) <= tick() then
+        bucket.built = true
+        bucket.deferVisible = false
+        self:HideBucket(bucket)
+        return
+    end
+
+    local wx, wyBase = self:GetRenderWindowPosition()
+    local wy = wyBase + self:GetAnimatedWindowYOffset()
+    local ww = self.window.width
+    local wh = self.window.height
+    local overlaySize = 41 * 12
+    local overlayX = wx + math.floor((ww - overlaySize) * 0.5)
+    local overlayY = wy + math.floor((wh - overlaySize) * 0.5)
+    local cuteGirlImageData = self:GetCuteGirlImageData()
+
+    if cuteGirlImageData then
+        self:CreateImage(bucket, cuteGirlImageData, overlayX, overlayY, overlaySize, overlaySize, 1)
+    else
+        self:CreateSquare(bucket, overlayX, overlayY, overlaySize, overlaySize, Theme.panelAlt, 0.95, true)
+        self:CreateSquare(bucket, overlayX, overlayY, overlaySize, overlaySize, Theme.accent, 1, false, 1)
+        self:CreateText(bucket, "cute girl", overlayX + math.floor(overlaySize * 0.5), overlayY + math.floor(overlaySize * 0.5) - 6, Theme.text, 44, true)
+    end
+
+    bucket.built = true
+    bucket.deferVisible = false
+    self:ShowBucket(bucket)
+    self.renderAlpha = 1
+end
+
 function UI:Render()
     self.hitboxes = {}
     self:RefreshPlayerTeleportOptions()
 
     if self.isBooting then
         self:HideBucket(self.shellBucket)
+        self:HideBucket(self.overlayBucket)
         for _, bucket in ipairs(self.tabBuckets) do
             self:HideBucket(bucket)
         end
@@ -4918,6 +5117,7 @@ function UI:Render()
     if (not self.uiVisible) and (self.uiAlpha or 0) <= 0.01 then
         self:HideBucket(self.shellBucket)
         self:HideBucket(self.loadingBucket)
+        self:HideBucket(self.overlayBucket)
         for _, bucket in ipairs(self.tabBuckets) do
             self:HideBucket(bucket)
         end
@@ -4950,6 +5150,12 @@ function UI:Render()
     else
         self:ShowBucket(self.tabBuckets[self.selectedTab])
         self:RegisterActiveTabHitboxes()
+    end
+
+    if (self.cuteGirlOverlayUntil or 0) > tick() then
+        self:BuildOverlay()
+    else
+        self:HideBucket(self.overlayBucket)
     end
 
     self.needsRedraw = false
