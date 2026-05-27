@@ -287,15 +287,12 @@ local function TweenDebug(message)
 end
 
 local function FarmDebug(message)
-    print("[Bloxburg] " .. tostring(message))
 end
 
 local function EspDebug(message)
-    print("[Bloxburg] " .. tostring(message))
 end
 
 local function TaxiDebug(message)
-    print("[Bloxburg] " .. tostring(message))
 end
 
 local TaxiDebugState = {}
@@ -310,7 +307,6 @@ local function TaxiDebugThrottled(key, interval, message)
 end
 
 local function JobDebug(message)
-    print("[Bloxburg] " .. tostring(message))
 end
 
 local CityTeleportTargets = {
